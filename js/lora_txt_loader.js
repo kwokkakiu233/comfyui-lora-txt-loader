@@ -1,38 +1,30 @@
 import { app } from "../../scripts/app.js";
 
 // ════════════════════════════════════════════════════════
-//  级联菜单核心（已针对上万个 LoRA 优化）
+//  树形面板核心（已针对上万个 LoRA 优化）
 // ════════════════════════════════════════════════════════
 const CASCADE_STYLE = `
-.ltl-cascade-root {
+.ltl-panel {
     position: fixed;
     z-index: 99999;
-    display: flex;
-    align-items: flex-start;
-    pointer-events: none;
-}
-.ltl-col {
     pointer-events: all;
     background: #1e1e2e;
     border: 1px solid #444;
     border-radius: 6px;
-    min-width: 220px;
-    max-width: 300px;
-    max-height: 420px;
+    width: 300px;
+    max-height: 480px;
     display: flex;
     flex-direction: column;
     box-shadow: 0 4px 16px rgba(0,0,0,0.5);
-    margin-right: 2px;
     font-size: 13px;
     color: #cdd6f4;
-    flex-shrink: 0;
 }
-.ltl-col-search {
+.ltl-panel-search {
     padding: 6px 8px 4px;
     flex-shrink: 0;
     border-bottom: 1px solid #333;
 }
-.ltl-col-search input {
+.ltl-panel-search input {
     width: 100%;
     box-sizing: border-box;
     background: #2a2a3e;
@@ -43,37 +35,68 @@ const CASCADE_STYLE = `
     padding: 4px 8px;
     outline: none;
 }
-.ltl-col-search input::placeholder { color: #666; }
-.ltl-col-list {
+.ltl-panel-search input::placeholder { color: #666; }
+.ltl-panel-list {
     overflow-y: auto;
     flex: 1;
+    padding: 4px 0;
 }
-.ltl-col-list::-webkit-scrollbar { width: 5px; }
-.ltl-col-list::-webkit-scrollbar-thumb { background: #555; border-radius: 3px; }
+.ltl-panel-list::-webkit-scrollbar { width: 5px; }
+.ltl-panel-list::-webkit-scrollbar-thumb { background: #555; border-radius: 3px; }
 .ltl-item {
-    padding: 6px 10px;
+    padding: 5px 8px;
     cursor: pointer;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
     border-radius: 4px;
-    margin: 2px 4px;
+    margin: 1px 4px;
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: 4px;
     user-select: none;
+    line-height: 1.4;
 }
-.ltl-item:hover, .ltl-item.active {
+.ltl-item:hover {
     background: #313244;
 }
-.ltl-folder::before { content: "📁"; font-size: 12px; }
-.ltl-file::before   { content: "🎨"; font-size: 12px; }
-.ltl-folder-arrow { margin-left: auto; opacity: 0.5; font-size: 10px; }
-.ltl-meta { padding: 5px 10px; font-size: 11px; opacity: 0.45; }
+.ltl-item-icon {
+    flex-shrink: 0;
+    font-size: 12px;
+    width: 16px;
+    text-align: center;
+}
+.ltl-item-name {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.ltl-folder-toggle {
+    flex-shrink: 0;
+    opacity: 0.4;
+    font-size: 10px;
+    width: 12px;
+    text-align: center;
+    transition: transform 0.1s;
+}
+.ltl-folder-toggle.open {
+    transform: rotate(90deg);
+}
+.ltl-children {
+    overflow: hidden;
+}
+.ltl-meta { padding: 4px 10px; font-size: 11px; opacity: 0.45; }
 `;
 
-const RENDER_CHUNK = 120;
 const SEARCH_LIMIT = 1000;
+
+// ── 缓存最后一次 pointerdown 的真实屏幕坐标 ──────────────────────────────────
+let _ltlLastMouseX = 0;
+let _ltlLastMouseY = 0;
+document.addEventListener("pointerdown", e => {
+    _ltlLastMouseX = e.clientX;
+    _ltlLastMouseY = e.clientY;
+}, true);
 
 // ════════════════════════════════════════════════════════
 //  全局共享 LoRA 数据（所有节点实例共用）
@@ -105,7 +128,6 @@ const LoraStore = {
                 this.flat = files;
                 this.tree = this._buildTree(files);
             }
-            // 修复：失败时在 IIFE resolve 后再重置 _loading，消除并发数据竞争
             if (!this.tree) this._loading = null;
         })();
         return this._loading;
@@ -187,15 +209,17 @@ function injectStyle() {
 class CascadeMenu {
     constructor(onSelect, onCancel) {
         injectStyle();
-        this.onSelect    = onSelect;
-        this.onCancel    = onCancel;
-        this.root        = null;
-        this.overlay     = null;
-        this.cols        = [];
-        this.hoverTimers = [];
+        this.onSelect   = onSelect;
+        this.onCancel   = onCancel;
+        this.panel      = null;
+        this.overlay    = null;
+        // 跨次保持展开状态
+        this._openState = new WeakMap();
+        this._currentRel = null; // 当前选中的 lora rel 路径
     }
 
-    async open(anchorEl) {
+    async open(anchorEl, currentRel) {
+        this._currentRel = currentRel || null;
         this.close(false);
 
         this.overlay = document.createElement("div");
@@ -203,161 +227,268 @@ class CascadeMenu {
         this.overlay.addEventListener("mousedown", () => this.close(true));
         document.body.appendChild(this.overlay);
 
-        const rect = anchorEl.getBoundingClientRect();
-        this.root = document.createElement("div");
-        this.root.className = "ltl-cascade-root";
-        this.root.style.top  = rect.bottom + 4 + "px";
-        this.root.style.left = rect.left + "px";
-        document.body.appendChild(this.root);
+        const originX = _ltlLastMouseX;
+        const originY = _ltlLastMouseY;
+
+        this.panel = document.createElement("div");
+        this.panel.className = "ltl-panel";
+        this.panel.addEventListener("mousedown", e => e.stopPropagation());
+        document.body.appendChild(this.panel);
 
         await LoraStore.ensure();
-        // 修复：ensure() 失败时 tree 为 null，显示错误提示后退出，避免 _buildCol(0, null) 崩溃
         if (!LoraStore.tree) {
-            const errEl = document.createElement("div");
-            errEl.className = "ltl-col";
-            errEl.style.padding = "12px 16px";
-            errEl.style.color = "#f38ba8";
-            errEl.textContent = "LoRA 列表加载失败，请重试";
-            this.root.appendChild(errEl);
+            this.panel.style.cssText = `left:${originX}px;top:${originY+4}px;padding:12px 16px;color:#f38ba8;`;
+            this.panel.textContent = "LoRA 列表加载失败，请重试";
             return;
         }
-        this._buildCol(0, LoraStore.tree);
+
+        // ── 搜索框 ──
+        const searchWrap = document.createElement("div");
+        searchWrap.className = "ltl-panel-search";
+        const input = document.createElement("input");
+        input.type = "text";
+        input.placeholder = "🔍 搜索 LoRA...";
+        searchWrap.appendChild(input);
+        this.panel.appendChild(searchWrap);
+
+        // ── 列表容器 ──
+        const list = document.createElement("div");
+        list.className = "ltl-panel-list";
+        this.panel.appendChild(list);
+
+        // 若有当前选中路径，预先展开对应文件夹层级
+        if (this._currentRel) {
+            const parts = this._currentRel.replace(/\\/g, "/").split("/");
+            let node = LoraStore.tree;
+            for (let i = 0; i < parts.length - 1; i++) {
+                const child = node.folders.get(parts[i]);
+                if (!child) break;
+                this._openState.set(child, true);
+                node = child;
+            }
+        }
+
+        this._renderTree(list, LoraStore.tree, 0);
+
+        // 渲染完成后滚动到当前选中项
+        if (this._currentRel) {
+            requestAnimationFrame(() => {
+                if (!this.panel) return;
+                const target = list.querySelector(`[data-rel="${CSS.escape(this._currentRel)}"]`);
+                if (target) {
+                    const listTop  = list.getBoundingClientRect().top;
+                    const itemTop  = target.getBoundingClientRect().top;
+                    list.scrollTop += (itemTop - listTop) - list.clientHeight / 3;
+                }
+            });
+        }
+
+        let timer = null;
+        input.addEventListener("input", () => {
+            clearTimeout(timer);
+            timer = setTimeout(() => this._runSearch(input.value, list), 120);
+        });
+
+        // ── 定位：先放视口外量尺寸，再修正 ──
+        this.panel.style.left = "-9999px";
+        this.panel.style.top  = "-9999px";
+        requestAnimationFrame(() => {
+            if (!this.panel) return;
+            const vw = window.innerWidth;
+            const vh = window.innerHeight;
+            const pw = this.panel.offsetWidth  || 300;
+            const ph = this.panel.offsetHeight || 480;
+            let left = originX;
+            let top  = originY + 4;
+            if (left + pw > vw) left = Math.max(0, vw - pw - 4);
+            if (top  + ph > vh) top  = Math.max(0, originY - ph - 4);
+            this.panel.style.left = left + "px";
+            this.panel.style.top  = top  + "px";
+        });
     }
 
     close(cancelled) {
         if (this.overlay) { this.overlay.remove(); this.overlay = null; }
-        if (this.root)    { this.root.remove();    this.root    = null; }
-        this.cols = [];
-        this.hoverTimers.forEach(clearTimeout);
-        this.hoverTimers = [];
+        if (this.panel)   { this.panel.remove();   this.panel   = null; }
+        // 不重置 _openState，保持展开状态供下次使用
         if (cancelled && this.onCancel) this.onCancel();
     }
 
-    _trimCols(depth) {
-        while (this.cols.length > depth) {
-            const c = this.cols.pop();
-            c.el.remove();
+    // 移除挂在 scroller 上的所有懒加载监听器
+    _clearScrollListeners(scroller) {
+        if (!scroller || !scroller._ltlScrollListeners) return;
+        for (const fn of scroller._ltlScrollListeners) {
+            scroller.removeEventListener("scroll", fn);
+        }
+        scroller._ltlScrollListeners = [];
+    }
+
+    // 递归清除一个 treeNode 及其所有后代的展开状态
+    _clearOpenStateDeep(treeNode) {
+        if (!treeNode || !treeNode.folders) return;
+        for (const [, child] of treeNode.folders) {
+            this._openState.set(child, false);
+            this._clearOpenStateDeep(child);
         }
     }
 
-    _renderEntries(list, entries) {
-        list.innerHTML = "";
-        if (entries.length === 0) {
-            const empty = document.createElement("div");
-            empty.className = "ltl-item";
-            empty.style.opacity = "0.4";
-            empty.textContent = "（空）";
-            list.appendChild(empty);
-            return;
-        }
-        let idx = 0;
-        const more = () => {
-            const frag = document.createDocumentFragment();
-            const end  = Math.min(idx + RENDER_CHUNK, entries.length);
-            for (; idx < end; idx++) frag.appendChild(entries[idx]());
-            list.appendChild(frag);
-        };
-        more();
-        list.onscroll = () => {
-            if (idx < entries.length &&
-                list.scrollTop + list.clientHeight >= list.scrollHeight - 60) {
-                more();
-            }
-        };
-    }
-
-    _buildCol(depth, node) {
-        this._trimCols(depth);
-
-        const col = document.createElement("div");
-        col.className = "ltl-col";
-        this.cols.push({ el: col, node });
-        this.root.appendChild(col);
-
+    // 递归渲染树，支持懒加载
+    _renderTree(container, node, depth) {
         const { folders, files } = LoraStore.listOf(node);
+        const INDENT = 14;
+        const CHUNK  = 200;
 
-        if (depth === 0) {
-            const searchWrap = document.createElement("div");
-            searchWrap.className = "ltl-col-search";
-            const input = document.createElement("input");
-            input.type = "text";
-            input.placeholder = "🔍 搜索 LoRA...";
-            searchWrap.appendChild(input);
-            col.appendChild(searchWrap);
-            searchWrap.addEventListener("mousedown", e => e.stopPropagation());
-
-            const list = document.createElement("div");
-            list.className = "ltl-col-list";
-            col.appendChild(list);
-
-            let timer = null;
-            input.addEventListener("input", () => {
-                clearTimeout(timer);
-                timer = setTimeout(() => this._runSearch(input.value, list), 120);
-            });
-
-            this._fillNormal(list, folders, files, depth);
-            return;
-        }
-
-        const list = document.createElement("div");
-        list.className = "ltl-col-list";
-        col.appendChild(list);
-        this._fillNormal(list, folders, files, depth);
-    }
-
-    _fillNormal(list, folders, files, depth) {
-        const entries = [];
-        // 修复：用对象包装 activeItem，使所有闭包共享同一个可变引用，替换值快照传参 bug
-        const activeRef = { current: null, _isBrowse: true };
+        const frag = document.createDocumentFragment();
 
         for (const folder of folders) {
-            entries.push(() => {
+            const isOpen = this._openState.get(folder.node) || false;
+
+            const wrapper = document.createElement("div");
+
+            const row = document.createElement("div");
+            row.className = "ltl-item";
+            row.style.paddingLeft = (8 + depth * INDENT) + "px";
+
+            const toggle = document.createElement("span");
+            toggle.className = "ltl-folder-toggle" + (isOpen ? " open" : "");
+            toggle.textContent = "▶";
+
+            const icon = document.createElement("span");
+            icon.className = "ltl-item-icon";
+            icon.textContent = "📁";
+
+            const name = document.createElement("span");
+            name.className = "ltl-item-name";
+            name.textContent = folder.name;
+            name.title = folder.name;
+
+            row.appendChild(toggle);
+            row.appendChild(icon);
+            row.appendChild(name);
+            wrapper.appendChild(row);
+
+            const children = document.createElement("div");
+            children.className = "ltl-children";
+            children.style.display = isOpen ? "" : "none";
+            wrapper.appendChild(children);
+
+            if (isOpen) {
+                this._renderTree(children, folder.node, depth + 1);
+            }
+
+            // 保存引用供手风琴逻辑使用
+            wrapper._folderNode   = folder.node;
+            wrapper._childrenEl   = children;
+            wrapper._toggleEl     = toggle;
+
+            row.addEventListener("click", () => {
+                const nowOpen = children.style.display === "none";
+
+                // 手风琴：关闭同级其他文件夹，并递归清除其子状态
+                if (nowOpen) {
+                    const parent = wrapper.parentElement;
+                    if (parent) {
+                        parent.childNodes.forEach(sibling => {
+                            if (sibling !== wrapper && sibling._folderNode) {
+                                this._openState.set(sibling._folderNode, false);
+                                this._clearOpenStateDeep(sibling._folderNode); // 递归清除子层级
+                                sibling._childrenEl.style.display = "none";
+                                sibling._childrenEl.innerHTML = "";            // 清空 DOM，下次展开重新渲染
+                                sibling._toggleEl.className = "ltl-folder-toggle";
+                            }
+                        });
+                    }
+                }
+
+                this._openState.set(folder.node, nowOpen);
+                children.style.display = nowOpen ? "" : "none";
+                toggle.className = "ltl-folder-toggle" + (nowOpen ? " open" : "");
+                if (nowOpen) {
+                    if (children.childElementCount === 0) {
+                        this._renderTree(children, folder.node, depth + 1);
+                    }
+                    // 展开后自动滚动：把文件夹行贴近列表顶部
+                    requestAnimationFrame(() => {
+                        const scroller = row.closest(".ltl-panel-list");
+                        if (scroller) {
+                            const rowTop  = row.getBoundingClientRect().top;
+                            const listTop = scroller.getBoundingClientRect().top;
+                            scroller.scrollTop += (rowTop - listTop) - 8;
+                        }
+                    });
+                }
+            });
+
+            frag.appendChild(wrapper);
+        }
+
+        let fileIdx = 0;
+        const renderNextChunk = () => {
+            const end = Math.min(fileIdx + CHUNK, files.length);
+            for (; fileIdx < end; fileIdx++) {
+                const file = files[fileIdx];
                 const item = document.createElement("div");
-                item.className = "ltl-item ltl-folder";
-                // 修复：改用 DOM 操作代替 innerHTML，防止文件夹名含特殊字符时 XSS
-                const nameSpan = document.createElement("span");
-                nameSpan.style.cssText = "flex:1;overflow:hidden;text-overflow:ellipsis";
-                nameSpan.textContent = folder.name;
-                const arrow = document.createElement("span");
-                arrow.className = "ltl-folder-arrow";
-                arrow.textContent = "▶";
-                item.appendChild(nameSpan);
-                item.appendChild(arrow);
-                item.addEventListener("mouseenter", () => {
-                    if (activeRef.current) activeRef.current.classList.remove("active");
-                    activeRef.current = item;
-                    item.classList.add("active");
-                    clearTimeout(this.hoverTimers[depth]);
-                    this.hoverTimers[depth] = setTimeout(
-                        () => this._buildCol(depth + 1, folder.node), 120);
+                item.className = "ltl-item";
+                item.style.paddingLeft = (8 + depth * INDENT) + "px";
+
+                const icon = document.createElement("span");
+                icon.className = "ltl-item-icon";
+                icon.textContent = "🎨";
+
+                const span = document.createElement("span");
+                span.className = "ltl-item-name";
+                span.textContent = file.name;
+                span.title = file.rel;
+
+                item.setAttribute("data-rel", file.rel);
+                // 当前选中项高亮
+                if (this._currentRel && file.rel === this._currentRel) {
+                    item.style.background = "#45475a";
+                }
+
+                item.appendChild(icon);
+                item.appendChild(span);
+                item.addEventListener("click", (e) => {
+                    e.stopPropagation();
+                    this.onSelect(file.rel, file.name);
+                    this.close(false);
                 });
-                return item;
-            });
-        }
+                container.appendChild(item);
+            }
+        };
 
-        if (folders.length > 0 && files.length > 0) {
-            entries.push(() => {
-                const sep = document.createElement("div");
-                sep.style.cssText = "border-top:1px solid #333;margin:3px 8px;";
-                return sep;
-            });
-        }
+        container.appendChild(frag);
+        renderNextChunk();
 
-        for (const file of files) {
-            entries.push(() => this._fileItem(list, file, depth, activeRef));
+        if (fileIdx < files.length) {
+            const scroller = container.closest(".ltl-panel-list");
+            if (scroller) {
+                if (!scroller._ltlScrollListeners) scroller._ltlScrollListeners = [];
+                const onScroll = () => {
+                    if (fileIdx >= files.length) {
+                        scroller.removeEventListener("scroll", onScroll);
+                        const idx = scroller._ltlScrollListeners.indexOf(onScroll);
+                        if (idx !== -1) scroller._ltlScrollListeners.splice(idx, 1);
+                        return;
+                    }
+                    if (scroller.scrollTop + scroller.clientHeight >= scroller.scrollHeight - 80) {
+                        renderNextChunk();
+                    }
+                };
+                scroller._ltlScrollListeners.push(onScroll);
+                scroller.addEventListener("scroll", onScroll);
+            }
         }
-
-        this._renderEntries(list, entries);
     }
 
     _runSearch(rawQuery, list) {
+        // 清除旧的懒加载 scroll 监听，防止累积
+        this._clearScrollListeners(list.closest(".ltl-panel-list") || list);
+        list.innerHTML = "";
         const q = rawQuery.trim().toLowerCase();
-        this._trimCols(1);
 
         if (q === "") {
-            const { folders, files } = LoraStore.listOf(LoraStore.tree);
-            this._fillNormal(list, folders, files, 0);
+            this._renderTree(list, LoraStore.tree, 0);
             return;
         }
 
@@ -371,7 +502,6 @@ class CascadeMenu {
         }
 
         if (matched.length === 0) {
-            list.innerHTML = "";
             const empty = document.createElement("div");
             empty.className = "ltl-item";
             empty.style.opacity = "0.4";
@@ -380,12 +510,29 @@ class CascadeMenu {
             return;
         }
 
-        // 修复：搜索列表也用对象包装 activeRef，所有闭包共享同一个可变引用
-        const activeRef = { current: null };
-        const entries = matched.map(file => () =>
-            this._fileItem(list, file, 0, activeRef)
-        );
-        this._renderEntries(list, entries);
+        for (const file of matched) {
+            const item = document.createElement("div");
+            item.className = "ltl-item";
+            item.style.paddingLeft = "8px";
+
+            const icon = document.createElement("span");
+            icon.className = "ltl-item-icon";
+            icon.textContent = "🎨";
+
+            const span = document.createElement("span");
+            span.className = "ltl-item-name";
+            span.textContent = file.rel.replace(/\\/g, "/");
+            span.title = file.rel;
+
+            item.appendChild(icon);
+            item.appendChild(span);
+            item.addEventListener("click", (e) => {
+                e.stopPropagation();
+                this.onSelect(file.rel, file.name);
+                this.close(false);
+            });
+            list.appendChild(item);
+        }
 
         if (matched.length >= SEARCH_LIMIT) {
             const meta = document.createElement("div");
@@ -393,36 +540,6 @@ class CascadeMenu {
             meta.textContent = `结果过多，仅显示前 ${SEARCH_LIMIT} 条，请输入更精确的关键词`;
             list.appendChild(meta);
         }
-    }
-
-    // activeRef: { current } 对象，由 _fillNormal / _runSearch 传入；
-    // 搜索模式（showFullPath）时 activeRef 仍传入，通过 depth===0 区分显示方式
-    _fileItem(list, file, depth, activeRef) {
-        const item = document.createElement("div");
-        item.className = "ltl-item ltl-file";
-        // depth===0 且从搜索调用时显示完整路径；正常浏览时只显示文件名
-        const showFullPath = (depth === 0 && !activeRef._isBrowse);
-        const display = showFullPath
-            ? (file.rel.includes("/") || file.rel.includes("\\") ? file.rel : file.name)
-            : file.name;
-        // 修复：改用 DOM 操作代替 innerHTML，防止文件名含 " 或 > 时 XSS
-        const span = document.createElement("span");
-        span.style.cssText = "flex:1;overflow:hidden;text-overflow:ellipsis";
-        span.textContent = display;
-        span.title = file.rel;
-        item.appendChild(span);
-        item.addEventListener("mouseenter", () => {
-            if (activeRef.current) activeRef.current.classList.remove("active");
-            activeRef.current = item;
-            item.classList.add("active");
-            this._trimCols(depth + 1);
-        });
-        item.addEventListener("click", (e) => {
-            e.stopPropagation();
-            this.onSelect(file.rel, file.name);
-            this.close(false);
-        });
-        return item;
     }
 }
 
@@ -496,7 +613,7 @@ app.registerExtension({
                 ctx.restore();
             };
 
-            // ---- 级联菜单 ----
+            // ---- 树形面板菜单 ----
             const menu = new CascadeMenu(
                 async (loraRel, filename) => {
                     loraWidget.value   = loraRel;
@@ -525,7 +642,7 @@ app.registerExtension({
                 // 修复：正确的坐标公式 screen = canvas_pos * scale + offset
                 anchor.style.left = mp[0] * scale + offset[0] + canvasRect.left + "px";
                 anchor.style.top  = mp[1] * scale + offset[1] + canvasRect.top  + "px";
-                menu.open(anchor);
+                menu.open(anchor, loraWidget.value || null);
             };
 
             // ---- Reset 按钮 ----
