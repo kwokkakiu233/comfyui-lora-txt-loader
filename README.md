@@ -1,7 +1,27 @@
-
 # LoRA Txt Loader — ComfyUI Custom Node
 
 A ComfyUI custom node that loads LoRA trigger words from a **local `.txt` file** — fully offline, fully customizable, no metadata dependency.
+
+---
+
+## Preview
+
+### LoRA Txt Loader — Tree Browser
+![LoRA Txt Loader node with trigger words auto-filled](assets/node_overview.png)
+
+The main node with trigger words auto-loaded from a `.txt` file. Click the LoRA name button to open the tree browser.
+
+### Tree-Style Folder Browser
+![Tree-style folder browser panel with accordion folders](assets/tree_browser.png)
+
+Browse thousands of LoRAs in a collapsible tree panel. Only one folder per level expands at a time (accordion behavior). Built-in search filters across all files instantly.
+
+### LoRA Txt Loader (Dropdown)
+![LoRA Txt Loader Dropdown variant](assets/node_dropdown.png)
+
+The dropdown variant — same auto-fill behavior, classic ComfyUI interface.
+
+---
 
 ## How It's Different
 
@@ -19,6 +39,8 @@ You maintain a plain `.txt` file next to each LoRA, and the node reads from it d
 - Trigger words are **exactly what you wrote** — no guessing, no scraping
 - You're in full control
 
+---
+
 ## Features
 
 - 📁 **Tree-style folder browser** — browse your LoRA folders in a collapsible tree panel, with accordion behavior so only one folder opens at a time, keeping the view clean
@@ -31,6 +53,8 @@ You maintain a plain `.txt` file next to each LoRA, and the node reads from it d
 - ⟳ **Refresh button** — reload the LoRA list without restarting ComfyUI (useful after downloading new LoRAs)
 - 📐 **Remembers node size** — manually resizing the node is preserved when switching LoRAs
 - 🔌 **Drop-in replacement** for the native Load LoRA node — same inputs, same outputs, plus extras
+
+---
 
 ## Nodes
 
@@ -63,6 +87,8 @@ ComfyUI/input/texts/
 └── ...
 ```
 
+---
+
 ## Installation
 
 ### Via ComfyUI Manager (recommended)
@@ -76,6 +102,8 @@ git clone https://github.com/kwokkakiu233/comfyui-lora-txt-loader
 ```
 
 Restart ComfyUI after installation.
+
+---
 
 ## Usage
 
@@ -113,22 +141,53 @@ Find it under `loaders` → **LoRA Txt Loader**
 |--------|-------------|
 | `model` | Patched model |
 | `clip` | Patched CLIP |
-| `positive_prompt` | Your (edited) trigger words — connect to CLIP Text Encode |
+| `positive_prompt` | Your (edited) trigger words — connect to downstream text nodes |
 | `lora_path` | Full path to the loaded LoRA file |
 
-### 4. Refresh without restarting
+### 4. Using `positive_prompt` in your workflow
 
-After downloading a new LoRA, click **⟳ 刷新 LoRA 列表** on the node. The tree browser will immediately include the new file — no need to restart ComfyUI.
+The `positive_prompt` output is a plain string — you can wire it into your workflow in several ways:
+
+**Option A — Direct encode** *(simplest)*
+Connect `positive_prompt` directly to a **CLIP Text Encode** node. The trigger words become your entire positive prompt.
+
+**Option B — Append to a base prompt** *(recommended)*
+Use a **Text Concatenate** node to merge trigger words with your own prompt:
+
+```
+[Your base prompt] + [positive_prompt from LoRA Txt Loader]
+        ↓
+  Text Concatenate
+        ↓
+  CLIP Text Encode
+        ↓
+    KSampler (positive)
+```
+
+This lets you write a scene description once and swap LoRAs freely without rewriting your prompt each time.
+
+**Option C — Convert to conditioning**
+Feed the output into a **Text to Conditioning** node if your workflow uses a conditioning-based pipeline.
+
+### 5. Refresh without restarting
+
+After downloading a new LoRA, click **⟳ Refresh LoRA List** on the node. The tree browser will immediately include the new file — no need to restart ComfyUI.
+
+---
 
 ## Why a `.txt` file?
 
 If you train your own LoRAs, you already know what triggers them — the metadata inside the file is often empty or auto-generated garbage. A plain text file is the simplest possible way to keep notes next to a model. No tools required, editable in Notepad, survives any model conversion or re-export.
+
+---
 
 ## Requirements
 
 - ComfyUI (Desktop or server version)
 - Python 3.x (included with ComfyUI)
 - No additional dependencies
+
+---
 
 ## License
 
