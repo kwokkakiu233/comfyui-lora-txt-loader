@@ -1,4 +1,4 @@
-# LoRA Txt Loader — ComfyUI Custom Node
+LoRA Txt Loader — ComfyUI Custom Node
 
 A ComfyUI custom node that loads LoRA trigger words from a **local `.txt` file** — fully offline, fully customizable, no metadata dependency.
 
@@ -21,18 +21,19 @@ You maintain a plain `.txt` file next to each LoRA, and the node reads from it d
 ## Features
 
 - 📁 **Cascade folder browser** — browse your LoRA folders in a tree-style dropdown menu, no more scrolling through hundreds of files in a flat list
-- 🔍 **Built-in search** — type to filter across all LoRAs instantly
+- 🔍 **Built-in search** — type to filter across all LoRAs instantly, supports up to 10,000+ files without lag
 - 📄 **Auto-loads trigger words** from a `.txt` file with the same name as the LoRA
 - ✏️ **Editable text box** — modify trigger words directly in the node before running
 - 🔄 **Auto-fills on LoRA switch** — when you select a different LoRA, the text box updates automatically
 - ↩️ **Reset button** — one click to restore the original `.txt` content if you've edited it
+- ⟳ **Refresh button** — reload the LoRA list without restarting ComfyUI (useful after downloading new LoRAs)
 - 📐 **Remembers node size** — manually resizing the node is preserved when switching LoRAs
 - 🔌 **Drop-in replacement** for the native Load LoRA node — same inputs, same outputs, plus extras
 
 ## Nodes
 
 ### 1. LoRA Txt Loader *(recommended)*
-The main node. Uses a **cascade folder browser** with built-in search to select a LoRA. Auto-fills the prompt text box from the adjacent `.txt` file. Includes a Reset button.
+The main node. Uses a **cascade folder browser** with built-in search to select a LoRA. Auto-fills the prompt text box from the adjacent `.txt` file. Includes a Reset button and a Refresh button to pick up newly downloaded LoRAs without restarting ComfyUI.
 
 ### 2. LoRA Txt Loader (Dropdown)
 Same as above but uses the **standard ComfyUI dropdown** instead of the cascade browser. Useful if you prefer the classic interface or have compatibility issues with the cascade menu.
@@ -52,6 +53,7 @@ Takes a **direct file path string** as input instead of a dropdown. Useful for d
 Loads a standalone `.txt` file from the `ComfyUI/input/texts/` folder into an editable text box. Useful for storing reusable prompt snippets, style templates, or shared trigger word sets separately from any specific LoRA.
 
 Place your `.txt` files in:
+
 ```
 ComfyUI/input/texts/
 ├── my_style.txt
@@ -111,6 +113,10 @@ Find it under `loaders` → **LoRA Txt Loader**
 | `clip` | Patched CLIP |
 | `positive_prompt` | Your (edited) trigger words — connect to CLIP Text Encode |
 | `lora_path` | Full path to the loaded LoRA file |
+
+### 4. Refresh without restarting
+
+After downloading a new LoRA, click **⟳ 刷新 LoRA 列表** on the node. The cascade browser will immediately include the new file — no need to restart ComfyUI.
 
 ## Why a `.txt` file?
 

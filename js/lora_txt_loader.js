@@ -1,7 +1,7 @@
 import { app } from "../../scripts/app.js";
 
 // ════════════════════════════════════════════════════════
-//  级联菜单核心
+//  级联菜单核心（已针对上万个 LoRA 优化）
 // ════════════════════════════════════════════════════════
 const CASCADE_STYLE = `
 .ltl-cascade-root {
@@ -69,11 +69,87 @@ const CASCADE_STYLE = `
 .ltl-folder::before { content: "📁"; font-size: 12px; }
 .ltl-file::before   { content: "🎨"; font-size: 12px; }
 .ltl-folder-arrow { margin-left: auto; opacity: 0.5; font-size: 10px; }
+.ltl-meta { padding: 5px 10px; font-size: 11px; opacity: 0.45; }
 `;
 
+const RENDER_CHUNK = 120;
+const SEARCH_LIMIT = 1000;
+
 // ════════════════════════════════════════════════════════
-//  公共：给 button widget 应用居左自绘样式
+//  全局共享 LoRA 数据（所有节点实例共用）
 // ════════════════════════════════════════════════════════
+const LoraStore = {
+    flat: null,
+    tree: null,
+    _loading: null,
+
+    invalidate() {
+        this.flat = null;
+        this.tree = null;
+        this._loading = null;
+    },
+
+    async ensure() {
+        if (this.tree) return;
+        if (this._loading) return this._loading;
+        this._loading = (async () => {
+            let files = [];
+            try {
+                const res  = await fetch(`/lora_txt_loader/browse_loras?subpath=__all__`);
+                const data = await res.json();
+                files = data.files || [];
+            } catch (e) {
+                console.warn("[LoRATxtLoader] 加载全量 LoRA 失败", e);
+            }
+            if (files.length > 0) {
+                this.flat = files;
+                this.tree = this._buildTree(files);
+            }
+            // 修复：失败时在 IIFE resolve 后再重置 _loading，消除并发数据竞争
+            if (!this.tree) this._loading = null;
+        })();
+        return this._loading;
+    },
+
+    _buildTree(flat) {
+        const root = { folders: new Map(), files: [], _sorted: null };
+        for (const f of flat) {
+            const norm  = f.rel.replace(/\\/g, "/");
+            const parts = norm.split("/");
+            let cur = root;
+            for (let i = 0; i < parts.length - 1; i++) {
+                const p = parts[i];
+                let next = cur.folders.get(p);
+                if (!next) { next = { folders: new Map(), files: [], _sorted: null }; cur.folders.set(p, next); }
+                cur = next;
+            }
+            cur.files.push({ name: parts[parts.length - 1], rel: f.rel });
+        }
+        return root;
+    },
+
+    listOf(node) {
+        if (node._sorted) return node._sorted;
+        const folders = [...node.folders.entries()]
+            .map(([name, child]) => ({ name, node: child }))
+            .sort((a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase()));
+        const files = [...node.files]
+            .sort((a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase()));
+        node._sorted = { folders, files };
+        return node._sorted;
+    },
+};
+
+// ── 刷新：同时清后端缓存 + 前端 LoraStore ───────────────────────────────────
+async function refreshLoraStore() {
+    try {
+        await fetch("/lora_txt_loader/refresh");
+    } catch (e) {
+        console.warn("[LoRATxtLoader] 后端 refresh 失败", e);
+    }
+    LoraStore.invalidate();
+}
+
 function applyLabelButtonDraw(widget, align = "left") {
     widget.draw = function(ctx, node, widget_width, y, H) {
         const margin = 6;
@@ -117,13 +193,11 @@ class CascadeMenu {
         this.overlay     = null;
         this.cols        = [];
         this.hoverTimers = [];
-        this._allFiles   = null;
     }
 
     async open(anchorEl) {
         this.close(false);
 
-        // 全屏透明遮罩，z-index 低于菜单，点击时关闭
         this.overlay = document.createElement("div");
         this.overlay.style.cssText = "position:fixed;inset:0;z-index:99998;background:transparent;";
         this.overlay.addEventListener("mousedown", () => this.close(true));
@@ -136,7 +210,18 @@ class CascadeMenu {
         this.root.style.left = rect.left + "px";
         document.body.appendChild(this.root);
 
-        await this._loadCol(0, "");
+        await LoraStore.ensure();
+        // 修复：ensure() 失败时 tree 为 null，显示错误提示后退出，避免 _buildCol(0, null) 崩溃
+        if (!LoraStore.tree) {
+            const errEl = document.createElement("div");
+            errEl.className = "ltl-col";
+            errEl.style.padding = "12px 16px";
+            errEl.style.color = "#f38ba8";
+            errEl.textContent = "LoRA 列表加载失败，请重试";
+            this.root.appendChild(errEl);
+            return;
+        }
+        this._buildCol(0, LoraStore.tree);
     }
 
     close(cancelled) {
@@ -148,34 +233,48 @@ class CascadeMenu {
         if (cancelled && this.onCancel) this.onCancel();
     }
 
-    async _getAllFiles() {
-        if (this._allFiles) return this._allFiles;
-        try {
-            const res = await fetch(`/lora_txt_loader/browse_loras?subpath=__all__`);
-            const data = await res.json();
-            this._allFiles = data.files || [];
-        } catch (e) {
-            this._allFiles = [];
+    _trimCols(depth) {
+        while (this.cols.length > depth) {
+            const c = this.cols.pop();
+            c.el.remove();
         }
-        return this._allFiles;
     }
 
-    async _loadCol(depth, subpath) {
-        while (this.cols.length > depth) this.cols.pop().remove();
-
-        let data;
-        try {
-            const res = await fetch(`/lora_txt_loader/browse_loras?subpath=${encodeURIComponent(subpath)}`);
-            data = await res.json();
-        } catch (e) {
-            console.warn("[LoRATxtLoader] browse 失败", e);
+    _renderEntries(list, entries) {
+        list.innerHTML = "";
+        if (entries.length === 0) {
+            const empty = document.createElement("div");
+            empty.className = "ltl-item";
+            empty.style.opacity = "0.4";
+            empty.textContent = "（空）";
+            list.appendChild(empty);
             return;
         }
+        let idx = 0;
+        const more = () => {
+            const frag = document.createDocumentFragment();
+            const end  = Math.min(idx + RENDER_CHUNK, entries.length);
+            for (; idx < end; idx++) frag.appendChild(entries[idx]());
+            list.appendChild(frag);
+        };
+        more();
+        list.onscroll = () => {
+            if (idx < entries.length &&
+                list.scrollTop + list.clientHeight >= list.scrollHeight - 60) {
+                more();
+            }
+        };
+    }
+
+    _buildCol(depth, node) {
+        this._trimCols(depth);
 
         const col = document.createElement("div");
         col.className = "ltl-col";
-        this.cols.push(col);
+        this.cols.push({ el: col, node });
         this.root.appendChild(col);
+
+        const { folders, files } = LoraStore.listOf(node);
 
         if (depth === 0) {
             const searchWrap = document.createElement("div");
@@ -185,107 +284,145 @@ class CascadeMenu {
             input.placeholder = "🔍 搜索 LoRA...";
             searchWrap.appendChild(input);
             col.appendChild(searchWrap);
-
-            this._getAllFiles();
+            searchWrap.addEventListener("mousedown", e => e.stopPropagation());
 
             const list = document.createElement("div");
             list.className = "ltl-col-list";
             col.appendChild(list);
 
-            input.addEventListener("input", async () => {
-                const q = input.value.trim().toLowerCase();
-                while (this.cols.length > 1) this.cols.pop().remove();
-                list.innerHTML = "";
-
-                if (q === "") {
-                    await this._refillList(list, data, depth);
-                    return;
-                }
-
-                const all = await this._getAllFiles();
-                const matched = all.filter(f =>
-                    f.rel.toLowerCase().includes(q) || f.name.toLowerCase().includes(q)
-                );
-
-                if (matched.length === 0) {
-                    const empty = document.createElement("div");
-                    empty.className = "ltl-item";
-                    empty.style.opacity = "0.4";
-                    empty.textContent = "无匹配结果";
-                    list.appendChild(empty);
-                    return;
-                }
-
-                for (const file of matched) {
-                    this._appendFileItem(list, file, depth);
-                }
+            let timer = null;
+            input.addEventListener("input", () => {
+                clearTimeout(timer);
+                timer = setTimeout(() => this._runSearch(input.value, list), 120);
             });
 
-            searchWrap.addEventListener("mousedown", e => e.stopPropagation());
-            await this._refillList(list, data, depth);
+            this._fillNormal(list, folders, files, depth);
             return;
         }
 
         const list = document.createElement("div");
         list.className = "ltl-col-list";
         col.appendChild(list);
-        await this._refillList(list, data, depth);
+        this._fillNormal(list, folders, files, depth);
     }
 
-    async _refillList(list, data, depth) {
-        list.innerHTML = "";
-        const col = this.cols[depth];
+    _fillNormal(list, folders, files, depth) {
+        const entries = [];
+        // 修复：用对象包装 activeItem，使所有闭包共享同一个可变引用，替换值快照传参 bug
+        const activeRef = { current: null, _isBrowse: true };
 
-        for (const folder of data.folders) {
-            const item = document.createElement("div");
-            item.className = "ltl-item ltl-folder";
-            item.innerHTML = `<span style="flex:1;overflow:hidden;text-overflow:ellipsis">${folder.name}</span><span class="ltl-folder-arrow">▶</span>`;
-            item.addEventListener("mouseenter", () => {
-                col.querySelectorAll(".ltl-item").forEach(i => i.classList.remove("active"));
-                item.classList.add("active");
-                clearTimeout(this.hoverTimers[depth]);
-                this.hoverTimers[depth] = setTimeout(() => this._loadCol(depth + 1, folder.subpath), 150);
+        for (const folder of folders) {
+            entries.push(() => {
+                const item = document.createElement("div");
+                item.className = "ltl-item ltl-folder";
+                // 修复：改用 DOM 操作代替 innerHTML，防止文件夹名含特殊字符时 XSS
+                const nameSpan = document.createElement("span");
+                nameSpan.style.cssText = "flex:1;overflow:hidden;text-overflow:ellipsis";
+                nameSpan.textContent = folder.name;
+                const arrow = document.createElement("span");
+                arrow.className = "ltl-folder-arrow";
+                arrow.textContent = "▶";
+                item.appendChild(nameSpan);
+                item.appendChild(arrow);
+                item.addEventListener("mouseenter", () => {
+                    if (activeRef.current) activeRef.current.classList.remove("active");
+                    activeRef.current = item;
+                    item.classList.add("active");
+                    clearTimeout(this.hoverTimers[depth]);
+                    this.hoverTimers[depth] = setTimeout(
+                        () => this._buildCol(depth + 1, folder.node), 120);
+                });
+                return item;
             });
-            list.appendChild(item);
         }
 
-        if (data.folders.length > 0 && data.files.length > 0) {
-            const sep = document.createElement("div");
-            sep.style.cssText = "border-top:1px solid #333;margin:3px 8px;";
-            list.appendChild(sep);
+        if (folders.length > 0 && files.length > 0) {
+            entries.push(() => {
+                const sep = document.createElement("div");
+                sep.style.cssText = "border-top:1px solid #333;margin:3px 8px;";
+                return sep;
+            });
         }
 
-        for (const file of data.files) {
-            this._appendFileItem(list, file, depth);
+        for (const file of files) {
+            entries.push(() => this._fileItem(list, file, depth, activeRef));
         }
 
-        if (data.folders.length === 0 && data.files.length === 0) {
+        this._renderEntries(list, entries);
+    }
+
+    _runSearch(rawQuery, list) {
+        const q = rawQuery.trim().toLowerCase();
+        this._trimCols(1);
+
+        if (q === "") {
+            const { folders, files } = LoraStore.listOf(LoraStore.tree);
+            this._fillNormal(list, folders, files, 0);
+            return;
+        }
+
+        const flat = LoraStore.flat || [];
+        const matched = [];
+        for (let i = 0; i < flat.length && matched.length < SEARCH_LIMIT; i++) {
+            const f = flat[i];
+            if (f.rel.toLowerCase().includes(q) || f.name.toLowerCase().includes(q)) {
+                matched.push(f);
+            }
+        }
+
+        if (matched.length === 0) {
+            list.innerHTML = "";
             const empty = document.createElement("div");
             empty.className = "ltl-item";
             empty.style.opacity = "0.4";
-            empty.textContent = "（空）";
+            empty.textContent = "无匹配结果";
             list.appendChild(empty);
+            return;
+        }
+
+        // 修复：搜索列表也用对象包装 activeRef，所有闭包共享同一个可变引用
+        const activeRef = { current: null };
+        const entries = matched.map(file => () =>
+            this._fileItem(list, file, 0, activeRef)
+        );
+        this._renderEntries(list, entries);
+
+        if (matched.length >= SEARCH_LIMIT) {
+            const meta = document.createElement("div");
+            meta.className = "ltl-meta";
+            meta.textContent = `结果过多，仅显示前 ${SEARCH_LIMIT} 条，请输入更精确的关键词`;
+            list.appendChild(meta);
         }
     }
 
-    _appendFileItem(list, file, depth) {
+    // activeRef: { current } 对象，由 _fillNormal / _runSearch 传入；
+    // 搜索模式（showFullPath）时 activeRef 仍传入，通过 depth===0 区分显示方式
+    _fileItem(list, file, depth, activeRef) {
         const item = document.createElement("div");
         item.className = "ltl-item ltl-file";
-        const display = (file.rel.includes("/") || file.rel.includes("\\"))
-            ? file.rel
+        // depth===0 且从搜索调用时显示完整路径；正常浏览时只显示文件名
+        const showFullPath = (depth === 0 && !activeRef._isBrowse);
+        const display = showFullPath
+            ? (file.rel.includes("/") || file.rel.includes("\\") ? file.rel : file.name)
             : file.name;
-        item.innerHTML = `<span style="flex:1;overflow:hidden;text-overflow:ellipsis" title="${file.rel}">${display}</span>`;
+        // 修复：改用 DOM 操作代替 innerHTML，防止文件名含 " 或 > 时 XSS
+        const span = document.createElement("span");
+        span.style.cssText = "flex:1;overflow:hidden;text-overflow:ellipsis";
+        span.textContent = display;
+        span.title = file.rel;
+        item.appendChild(span);
         item.addEventListener("mouseenter", () => {
-            list.querySelectorAll(".ltl-item").forEach(i => i.classList.remove("active"));
+            if (activeRef.current) activeRef.current.classList.remove("active");
+            activeRef.current = item;
             item.classList.add("active");
-            while (this.cols.length > depth + 1) this.cols.pop().remove();
+            this._trimCols(depth + 1);
         });
         item.addEventListener("click", (e) => {
             e.stopPropagation();
             this.onSelect(file.rel, file.name);
             this.close(false);
         });
-        list.appendChild(item);
+        return item;
     }
 }
 
@@ -331,38 +468,31 @@ app.registerExtension({
             loraWidget.draw = () => {};
             loraWidget.mouse = () => {};
 
-            // ---- 显示当前选中lora名的按钮，点击打开级联菜单 ----
+            // ---- 选中 LoRA 的显示按钮 ----
             const initName = loraWidget.value
                 ? loraWidget.value.split(/[\/\\]/).pop()
                 : "( 点击选择 LoRA )";
-            const displayWidget = this.addWidget("button", initName, null, () => {
-                openMenu();
-            });
+            const displayWidget = this.addWidget("button", initName, null, () => openMenu());
             displayWidget.serialize = false;
+            displayWidget.computeSize = function(width) { return [width, LiteGraph.NODE_WIDGET_HEIGHT ?? 20]; };
 
-            // ---- 覆盖 draw：文字居左 + 超出省略 ----
             displayWidget.draw = function(ctx, node, widget_width, y, H) {
-                const margin = 6;
-                const x = margin;
-                const w = widget_width - margin * 2;
-                // 背景（按钮风格）
-                ctx.fillStyle = "#3a3a4e";
-                ctx.strokeStyle = "#555";
-                ctx.lineWidth = 1;
-                ctx.beginPath();
-                ctx.roundRect(x, y, w, H, 4);
-                ctx.fill();
-                ctx.stroke();
-                // 文字居左，超出截断
+                const margin = 6, x = margin, w = widget_width - margin * 2;
+                ctx.fillStyle = "#3a3a4e"; ctx.strokeStyle = "#555"; ctx.lineWidth = 1;
+                ctx.beginPath(); ctx.roundRect(x, y, w, H, 4); ctx.fill(); ctx.stroke();
                 ctx.fillStyle = "#cdd6f4";
                 ctx.font = `${Math.min(H * 0.55, 13)}px sans-serif`;
-                ctx.textAlign = "left";
                 ctx.textBaseline = "middle";
-                ctx.save();
-                ctx.beginPath();
-                ctx.rect(x + 8, y, w - 16, H);
-                ctx.clip();
-                ctx.fillText(this.name, x + 8, y + H / 2);
+                ctx.save(); ctx.beginPath(); ctx.rect(x + 8, y, w - 16, H); ctx.clip();
+                const availW = w - 16;
+                const textW = ctx.measureText(this.name).width;
+                if (textW <= availW) {
+                    ctx.textAlign = "center";
+                    ctx.fillText(this.name, x + w / 2, y + H / 2);
+                } else {
+                    ctx.textAlign = "left";
+                    ctx.fillText(this.name, x + 8, y + H / 2);
+                }
                 ctx.restore();
             };
 
@@ -372,14 +502,11 @@ app.registerExtension({
                     loraWidget.value   = loraRel;
                     displayWidget.name = filename;
                     loraWidget.callback?.(loraRel);
-                    const txt = await fetchTxt(loraRel);
-                    promptWidget.value = txt;
+                    promptWidget.value = await fetchTxt(loraRel);
                     fitSize();
                     app.graph.setDirtyCanvas(true);
                 },
-                () => {
-                    // 取消：不做任何事，保持原来的 lora
-                }
+                () => {}
             );
 
             const openMenu = () => {
@@ -392,25 +519,34 @@ app.registerExtension({
                 }
                 const canvasEl   = app.canvas.canvas;
                 const canvasRect = canvasEl.getBoundingClientRect();
-                const mp    = app.canvas.graph_mouse;
+                const mp     = app.canvas.graph_mouse;
                 const scale  = app.canvas.ds?.scale  ?? 1;
                 const offset = app.canvas.ds?.offset ?? [0, 0];
-                const sx = (mp[0] + offset[0]) * scale + canvasRect.left;
-                const sy = (mp[1] + offset[1]) * scale + canvasRect.top;
-                anchor.style.left = sx + "px";
-                anchor.style.top  = sy + "px";
+                // 修复：正确的坐标公式 screen = canvas_pos * scale + offset
+                anchor.style.left = mp[0] * scale + offset[0] + canvasRect.left + "px";
+                anchor.style.top  = mp[1] * scale + offset[1] + canvasRect.top  + "px";
                 menu.open(anchor);
             };
 
             // ---- Reset 按钮 ----
             const resetBtn = this.addWidget("button", "↺ Reset from .txt", null, async () => {
-                const txt = await fetchTxt(loraWidget.value);
-                promptWidget.value = txt;
+                promptWidget.value = await fetchTxt(loraWidget.value);
             });
             resetBtn.serialize = false;
             applyLabelButtonDraw(resetBtn, "center");
 
-            // ---- 节点首次加载 ----
+            // ---- 刷新列表按钮（同时清后端缓存 + 前端 LoraStore）----
+            const refreshBtn = this.addWidget("button", "⟳ 刷新 LoRA 列表", null, async () => {
+                refreshBtn.name = "⟳ 刷新中...";
+                app.graph.setDirtyCanvas(true);
+                await refreshLoraStore();
+                refreshBtn.name = "⟳ 刷新 LoRA 列表";
+                app.graph.setDirtyCanvas(true);
+            });
+            refreshBtn.serialize = false;
+            applyLabelButtonDraw(refreshBtn, "center");
+
+            // ---- 首次加载 ----
             setTimeout(async () => {
                 if (loraWidget.value) {
                     displayWidget.name = loraWidget.value.split(/[\/\\]/).pop();
@@ -425,7 +561,7 @@ app.registerExtension({
 });
 
 // ════════════════════════════════════════════════════════
-//  节点 4：LoRA Txt Loader (Dropdown) — 原始下拉选择方式
+//  节点 4：LoRA Txt Loader (Dropdown)
 // ════════════════════════════════════════════════════════
 app.registerExtension({
     name: "LoRATxtLoaderDropdown.AutoFill",
@@ -461,27 +597,22 @@ app.registerExtension({
                 }
             };
 
-            // ---- Reset 按钮 ----
             const resetBtn = this.addWidget("button", "↺ Reset from .txt", null, async () => {
-                const txt = await fetchTxt(loraWidget.value);
-                promptWidget.value = txt;
+                promptWidget.value = await fetchTxt(loraWidget.value);
             });
             resetBtn.serialize = false;
             applyLabelButtonDraw(resetBtn, "center");
 
-            // ---- 监听下拉变化 ----
             let lastLoraName = null;
             const origCallback = loraWidget.callback;
             loraWidget.callback = async (value) => {
                 origCallback?.call(loraWidget, value);
                 if (value === lastLoraName) return;
                 lastLoraName = value;
-                const txt = await fetchTxt(value);
-                promptWidget.value = txt;
+                promptWidget.value = await fetchTxt(value);
                 fitSize();
             };
 
-            // ---- 首次加载 ----
             setTimeout(async () => {
                 if (promptWidget.value === "" && loraWidget.value) {
                     lastLoraName = loraWidget.value;
@@ -495,6 +626,7 @@ app.registerExtension({
 
 // ════════════════════════════════════════════════════════
 //  节点 3：Txt File Loader
+//  修复：defineProperty 不再放在 setTimeout 里，消除竞态
 // ════════════════════════════════════════════════════════
 app.registerExtension({
     name: "TxtFileLoader.AutoFill",
@@ -530,7 +662,6 @@ app.registerExtension({
                 }
             };
 
-            // ---- Reset 按钮 ----
             const resetBtn = this.addWidget("button", "↺ Reset from file", null, async () => {
                 textWidget.value = await fetchTxtFile(nameWidget.value);
                 fitSize();
@@ -538,28 +669,30 @@ app.registerExtension({
             resetBtn.serialize = false;
             applyLabelButtonDraw(resetBtn, "center");
 
-            // ---- 延迟拦截 value setter ----
-            setTimeout(async () => {
-                let _val = nameWidget.value;
-                Object.defineProperty(nameWidget, "value", {
-                    configurable: true,
-                    get() { return _val; },
-                    set(v) {
-                        const prev = _val;
-                        _val = v;
-                        if (v !== prev) {
-                            fetchTxtFile(v).then(txt => {
-                                textWidget.value = txt;
-                                fitSize();
-                            });
-                        }
+            // 修复竞态：立刻劫持 setter，不等 setTimeout
+            let _val = nameWidget.value;
+            Object.defineProperty(nameWidget, "value", {
+                configurable: true,
+                get() { return _val; },
+                set(v) {
+                    const prev = _val;
+                    _val = v;
+                    if (v !== prev) {
+                        fetchTxtFile(v).then(txt => {
+                            textWidget.value = txt;
+                            fitSize();
+                        });
                     }
-                });
-                if (textWidget.value === "" && nameWidget.value) {
-                    textWidget.value = await fetchTxtFile(nameWidget.value);
-                    fitSize();
                 }
-            }, 300);
+            });
+
+            // 首次加载
+            if (textWidget.value === "" && nameWidget.value) {
+                fetchTxtFile(nameWidget.value).then(txt => {
+                    textWidget.value = txt;
+                    fitSize();
+                });
+            }
         };
     },
 });
