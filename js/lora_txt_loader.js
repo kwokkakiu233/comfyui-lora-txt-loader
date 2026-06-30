@@ -1,8 +1,34 @@
 import { app } from "../../scripts/app.js";
 
-// ════════════════════════════════════════════════════════
-//  树形面板核心（已针对上万个 LoRA 优化）
-// ════════════════════════════════════════════════════════
+// 简单的 toast 提示（不会阻止输入焦点）
+function showToast(message, type = "info") {
+    const toast = document.createElement("div");
+    const bgColor = type === "error" ? "#f38ba8" : type === "success" ? "#a6e3a1" : "#89b4fa";
+    toast.style.cssText = `
+        position: fixed;
+        bottom: 20px;
+        right: 20px;
+        background: ${bgColor};
+        color: #1e1e2e;
+        padding: 12px 16px;
+        border-radius: 4px;
+        font-size: 12px;
+        z-index: 99999;
+        max-width: 300px;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+        word-wrap: break-word;
+        font-weight: 500;
+    `;
+    toast.textContent = message;
+    document.body.appendChild(toast);
+
+    setTimeout(() => {
+        toast.style.opacity = "0";
+        toast.style.transition = "opacity 0.3s";
+        setTimeout(() => toast.remove(), 300);
+    }, 3000);
+}
+
 const CASCADE_STYLE = `
 .ltl-panel {
     position: fixed;
@@ -86,11 +112,165 @@ const CASCADE_STYLE = `
     overflow: hidden;
 }
 .ltl-meta { padding: 4px 10px; font-size: 11px; opacity: 0.45; }
+
+.version-dialog {
+    position: fixed;
+    z-index: 100001;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    background: #1e1e2e;
+    border: 1px solid #555;
+    border-radius: 8px;
+    padding: 20px;
+    min-width: 400px;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.8);
+    color: #cdd6f4;
+    pointer-events: all;
+}
+.version-dialog-backdrop {
+    position: fixed;
+    z-index: 100000;
+    inset: 0;
+    background: rgba(0,0,0,0.5);
+    pointer-events: all;
+}
+.version-dialog h2 {
+    margin: 0 0 16px 0;
+    font-size: 16px;
+    font-weight: 600;
+}
+.version-dialog label {
+    display: block;
+    margin: 12px 0 4px 0;
+    font-size: 13px;
+}
+.version-dialog input,
+.version-dialog textarea {
+    width: 100%;
+    box-sizing: border-box;
+    background: #2a2a3e;
+    border: 1px solid #555;
+    border-radius: 4px;
+    color: #cdd6f4;
+    padding: 8px;
+    font-family: inherit;
+    font-size: 12px;
+    outline: none;
+    pointer-events: all;
+}
+.version-dialog input:focus,
+.version-dialog textarea:focus {
+    border-color: #6c7086;
+    background: #313244;
+}
+.version-dialog textarea {
+    min-height: 60px;
+    resize: vertical;
+}
+.version-dialog-buttons {
+    display: flex;
+    gap: 8px;
+    margin-top: 16px;
+    justify-content: flex-end;
+}
+.version-dialog-buttons button {
+    padding: 8px 16px;
+    background: #313244;
+    border: 1px solid #555;
+    border-radius: 4px;
+    color: #cdd6f4;
+    cursor: pointer;
+    font-size: 12px;
+    pointer-events: all;
+}
+.version-dialog-buttons button:hover {
+    background: #45475a;
+    border-color: #6c7086;
+}
+.version-dialog-buttons button.primary {
+    background: #89b4fa;
+    color: #1e1e2e;
+    border-color: #89b4fa;
+}
+.version-dialog-buttons button.primary:hover {
+    background: #a3c7ff;
+}
+
+.version-list {
+    max-height: 300px;
+    overflow-y: auto;
+    border: 1px solid #555;
+    border-radius: 4px;
+    margin: 12px 0;
+}
+.version-item {
+    padding: 10px;
+    border-bottom: 1px solid #333;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 8px;
+}
+.version-item:last-child {
+    border-bottom: none;
+}
+.version-item-info {
+    flex: 1;
+    min-width: 0;
+}
+.version-item-name {
+    font-weight: 500;
+    margin-bottom: 2px;
+}
+.version-item-meta {
+    font-size: 11px;
+    opacity: 0.6;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.version-item-badge {
+    display: inline-block;
+    padding: 2px 6px;
+    background: #a6e3a1;
+    color: #1e1e2e;
+    border-radius: 3px;
+    font-size: 10px;
+    font-weight: 600;
+    margin-left: 6px;
+}
+.version-item-lock {
+    color: #f38ba8;
+    font-size: 12px;
+    margin-left: 6px;
+}
+.version-item-buttons {
+    display: flex;
+    gap: 4px;
+    flex-shrink: 0;
+}
+.version-item-buttons button {
+    padding: 4px 8px;
+    background: #313244;
+    border: 1px solid #555;
+    border-radius: 3px;
+    color: #cdd6f4;
+    cursor: pointer;
+    font-size: 11px;
+    pointer-events: all;
+}
+.version-item-buttons button:hover {
+    background: #45475a;
+}
+.version-item-buttons button:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
 `;
 
 const SEARCH_LIMIT = 1000;
 
-// ── 缓存最后一次 pointerdown 的真实屏幕坐标 ──────────────────────────────────
 let _ltlLastMouseX = 0;
 let _ltlLastMouseY = 0;
 document.addEventListener("pointerdown", e => {
@@ -98,9 +278,6 @@ document.addEventListener("pointerdown", e => {
     _ltlLastMouseY = e.clientY;
 }, true);
 
-// ════════════════════════════════════════════════════════
-//  全局共享 LoRA 数据（所有节点实例共用）
-// ════════════════════════════════════════════════════════
 const LoraStore = {
     flat: null,
     tree: null,
@@ -122,7 +299,7 @@ const LoraStore = {
                 const data = await res.json();
                 files = data.files || [];
             } catch (e) {
-                console.warn("[LoRATxtLoader] 加载全量 LoRA 失败", e);
+                console.warn("[LoRATxtLoader] Failed to load all LoRA models.", e);
             }
             if (files.length > 0) {
                 this.flat = files;
@@ -162,12 +339,11 @@ const LoraStore = {
     },
 };
 
-// ── 刷新：同时清后端缓存 + 前端 LoraStore ───────────────────────────────────
 async function refreshLoraStore() {
     try {
         await fetch("/lora_txt_loader/refresh");
     } catch (e) {
-        console.warn("[LoRATxtLoader] 后端 refresh 失败", e);
+        console.warn("[LoRATxtLoader] Backend refresh failed.", e);
     }
     LoraStore.invalidate();
 }
@@ -206,6 +382,234 @@ function injectStyle() {
     document.head.appendChild(s);
 }
 
+// 显示保存版本对话框
+function showSaveVersionDialog(loraName, content, isFirstSave, originalContent, callback) {
+    const backdrop = document.createElement("div");
+    backdrop.className = "version-dialog-backdrop";
+    document.body.appendChild(backdrop);
+
+    const dialog = document.createElement("div");
+    dialog.className = "version-dialog";
+
+    // 判断是否应该保存为默认版本
+    const shouldSaveAsDefault = isFirstSave || (originalContent && content === originalContent);
+
+    let dialogHTML = `<h2>💾 Save New Version</h2>`;
+
+    if (shouldSaveAsDefault) {
+        dialogHTML += `
+            <p style="font-size: 13px; color: #a6e3a1; margin-bottom: 12px;">
+                ✓ This will be saved as the <strong>default version</strong>.
+            </p>
+            <p style="font-size: 11px; color: #888; margin-bottom: 16px;">
+                No version number or remark needed.
+            </p>
+            <div class="version-dialog-buttons">
+                <button id="cancel-btn">Cancel</button>
+                <button id="save-btn" class="primary">Save as Default</button>
+            </div>
+        `;
+    } else {
+        dialogHTML += `
+            <p style="font-size: 12px; color: #888; margin-bottom: 12px;" id="notice"></p>
+            <label>Version Number (Custom Name):</label>
+            <input type="text" id="version-name" placeholder="e.g., v1, improved, final" value="">
+            <label>Remark (Optional):</label>
+            <textarea id="version-remark" placeholder="Add notes about this version..."></textarea>
+            <div class="version-dialog-buttons">
+                <button id="cancel-btn">Cancel</button>
+                <button id="save-btn" class="primary">Save Version</button>
+            </div>
+        `;
+    }
+
+    dialog.innerHTML = dialogHTML;
+    document.body.appendChild(dialog);
+
+    const cancelBtn = dialog.querySelector("#cancel-btn");
+    const saveBtn = dialog.querySelector("#save-btn");
+    const noticeEl = dialog.querySelector("#notice");
+    const nameInput = dialog.querySelector("#version-name");
+
+    if (nameInput) {
+        nameInput.focus();
+    }
+
+    const cleanup = () => {
+        backdrop.remove();
+        dialog.remove();
+    };
+
+    cancelBtn.addEventListener("click", cleanup);
+
+    saveBtn.addEventListener("click", async () => {
+        if (shouldSaveAsDefault) {
+            cleanup();
+            callback("", ""); // 默认版本不需要自定义名称和备注
+        } else {
+            const customName = nameInput.value.trim();
+            const remark = dialog.querySelector("#version-remark").value.trim();
+
+            if (!customName) {
+                noticeEl.textContent = "⚠ Version number cannot be empty";
+                noticeEl.style.color = "#f38ba8";
+                return;
+            }
+
+            cleanup();
+            callback(customName, remark);
+        }
+    });
+
+    backdrop.addEventListener("click", (e) => {
+        if (e.target === backdrop) cleanup();
+    });
+}
+
+function showVersionManagerDialog(loraName, versions, currentVersion, hasOriginal, callback) {
+    const backdrop = document.createElement("div");
+    backdrop.className = "version-dialog-backdrop";
+    document.body.appendChild(backdrop);
+
+    const dialog = document.createElement("div");
+    dialog.className = "version-dialog";
+    dialog.style.minWidth = "500px";
+
+    let listHTML = `<h2>📚 Version Manager</h2>`;
+
+    // 总是显示版本列表容器，即使为空
+    listHTML += `<div class="version-list" id="versions-container">`;
+
+    // 显示 _original.txt（默认版本）- 只有有原始版本时才显示
+    if (hasOriginal) {
+        const isOriginalCurrent = currentVersion === "_original.txt";
+        listHTML += `
+            <div class="version-item">
+                <div class="version-item-info">
+                    <div class="version-item-name">📌 Original Version${isOriginalCurrent ? '<span class="version-item-badge">✓ Current</span>' : ''}</div>
+                    <div class="version-item-meta">_original.txt (Default)</div>
+                </div>
+                <span class="version-item-lock">🔒 Locked</span>
+                <div class="version-item-buttons">
+                    <button class="load-original-btn" ${isOriginalCurrent ? "disabled" : ""}>Load</button>
+                </div>
+            </div>
+        `;
+    }
+
+    // 显示其他版本
+    for (const v of versions) {
+        const isCurrent = v.filename === currentVersion;
+        let badge = "";
+        if (isCurrent) {
+            badge = `<span class="version-item-badge">✓ Current</span>`;
+        }
+
+        let remark = "";
+        if (v.remark) {
+            remark = ` — ${v.remark}`;
+        }
+
+        listHTML += `
+            <div class="version-item">
+                <div class="version-item-info">
+                    <div class="version-item-name">${v.custom_name}${badge}</div>
+                    <div class="version-item-meta">${v.timestamp}${remark}</div>
+                </div>
+                <div class="version-item-buttons">
+                    <button class="load-btn" data-file="${v.filename}" ${isCurrent ? "disabled" : ""}>Load</button>
+                    <button class="delete-btn" data-file="${v.filename}" ${isCurrent ? "disabled" : ""}>Delete</button>
+                </div>
+            </div>
+        `;
+    }
+
+    listHTML += `</div>`;
+
+    // 无版本时显示提示
+    if (!hasOriginal && versions.length === 0) {
+        listHTML += `<p style="color: #888; text-align: center; padding: 20px;">No versions saved yet. Right-click node to save your first version.</p>`;
+    }
+
+    listHTML += `
+        <div class="version-dialog-buttons">
+            <button id="close-btn">Close</button>
+        </div>
+    `;
+
+    dialog.innerHTML = listHTML;
+    document.body.appendChild(dialog);
+
+    const cleanup = () => {
+        backdrop.remove();
+        dialog.remove();
+    };
+
+    const closeBtn = dialog.querySelector("#close-btn");
+    closeBtn.addEventListener("click", cleanup);
+
+    const loadOriginalBtn = dialog.querySelector(".load-original-btn");
+    if (loadOriginalBtn) {
+        loadOriginalBtn.addEventListener("click", async () => {
+            callback("load", "_original.txt");
+            cleanup();
+        });
+    }
+
+    dialog.querySelectorAll(".load-btn").forEach(btn => {
+        btn.addEventListener("click", async () => {
+            const filename = btn.dataset.file;
+            callback("load", filename);
+            cleanup();
+        });
+    });
+
+    dialog.querySelectorAll(".delete-btn").forEach(btn => {
+        btn.addEventListener("click", async () => {
+            const filename = btn.dataset.file;
+            // 确认删除
+            const confirmBackdrop = document.createElement("div");
+            confirmBackdrop.className = "version-dialog-backdrop";
+            const confirmDialog = document.createElement("div");
+            confirmDialog.className = "version-dialog";
+            confirmDialog.style.minWidth = "300px";
+            confirmDialog.innerHTML = `
+                <h2>Confirm Delete</h2>
+                <p>Are you sure you want to delete this version?</p>
+                <div class="version-dialog-buttons">
+                    <button id="confirm-cancel">Cancel</button>
+                    <button id="confirm-delete" class="primary">Delete</button>
+                </div>
+            `;
+            document.body.appendChild(confirmBackdrop);
+            document.body.appendChild(confirmDialog);
+
+            confirmDialog.querySelector("#confirm-cancel").addEventListener("click", () => {
+                confirmBackdrop.remove();
+                confirmDialog.remove();
+            });
+
+            confirmDialog.querySelector("#confirm-delete").addEventListener("click", () => {
+                confirmBackdrop.remove();
+                confirmDialog.remove();
+                callback("delete", filename);
+                cleanup();
+            });
+
+            confirmBackdrop.addEventListener("click", (e) => {
+                if (e.target === confirmBackdrop) {
+                    confirmBackdrop.remove();
+                    confirmDialog.remove();
+                }
+            });
+        });
+    });
+
+    backdrop.addEventListener("click", (e) => {
+        if (e.target === backdrop) cleanup();
+    });
+}
+
 class CascadeMenu {
     constructor(onSelect, onCancel) {
         injectStyle();
@@ -213,9 +617,8 @@ class CascadeMenu {
         this.onCancel   = onCancel;
         this.panel      = null;
         this.overlay    = null;
-        // 跨次保持展开状态
         this._openState = new WeakMap();
-        this._currentRel = null; // 当前选中的 lora rel 路径
+        this._currentRel = null;
     }
 
     async open(anchorEl, currentRel) {
@@ -238,25 +641,22 @@ class CascadeMenu {
         await LoraStore.ensure();
         if (!LoraStore.tree) {
             this.panel.style.cssText = `left:${originX}px;top:${originY+4}px;padding:12px 16px;color:#f38ba8;`;
-            this.panel.textContent = "LoRA 列表加载失败，请重试";
+            this.panel.textContent = "LoRA list failed to load, please try again.";
             return;
         }
 
-        // ── 搜索框 ──
         const searchWrap = document.createElement("div");
         searchWrap.className = "ltl-panel-search";
         const input = document.createElement("input");
         input.type = "text";
-        input.placeholder = "🔍 搜索 LoRA...";
+        input.placeholder = "🔍 Search for LoRA...";
         searchWrap.appendChild(input);
         this.panel.appendChild(searchWrap);
 
-        // ── 列表容器 ──
         const list = document.createElement("div");
         list.className = "ltl-panel-list";
         this.panel.appendChild(list);
 
-        // 若有当前选中路径，预先展开对应文件夹层级
         if (this._currentRel) {
             const parts = this._currentRel.replace(/\\/g, "/").split("/");
             let node = LoraStore.tree;
@@ -270,7 +670,6 @@ class CascadeMenu {
 
         this._renderTree(list, LoraStore.tree, 0);
 
-        // 渲染完成后滚动到当前选中项
         if (this._currentRel) {
             requestAnimationFrame(() => {
                 if (!this.panel) return;
@@ -289,7 +688,6 @@ class CascadeMenu {
             timer = setTimeout(() => this._runSearch(input.value, list), 120);
         });
 
-        // ── 定位：先放视口外量尺寸，再修正 ──
         this.panel.style.left = "-9999px";
         this.panel.style.top  = "-9999px";
         requestAnimationFrame(() => {
@@ -310,11 +708,9 @@ class CascadeMenu {
     close(cancelled) {
         if (this.overlay) { this.overlay.remove(); this.overlay = null; }
         if (this.panel)   { this.panel.remove();   this.panel   = null; }
-        // 不重置 _openState，保持展开状态供下次使用
         if (cancelled && this.onCancel) this.onCancel();
     }
 
-    // 移除挂在 scroller 上的所有懒加载监听器
     _clearScrollListeners(scroller) {
         if (!scroller || !scroller._ltlScrollListeners) return;
         for (const fn of scroller._ltlScrollListeners) {
@@ -323,7 +719,6 @@ class CascadeMenu {
         scroller._ltlScrollListeners = [];
     }
 
-    // 递归清除一个 treeNode 及其所有后代的展开状态
     _clearOpenStateDeep(treeNode) {
         if (!treeNode || !treeNode.folders) return;
         for (const [, child] of treeNode.folders) {
@@ -332,7 +727,6 @@ class CascadeMenu {
         }
     }
 
-    // 递归渲染树，支持懒加载
     _renderTree(container, node, depth) {
         const { folders, files } = LoraStore.listOf(node);
         const INDENT = 14;
@@ -376,7 +770,6 @@ class CascadeMenu {
                 this._renderTree(children, folder.node, depth + 1);
             }
 
-            // 保存引用供手风琴逻辑使用
             wrapper._folderNode   = folder.node;
             wrapper._childrenEl   = children;
             wrapper._toggleEl     = toggle;
@@ -384,16 +777,15 @@ class CascadeMenu {
             row.addEventListener("click", () => {
                 const nowOpen = children.style.display === "none";
 
-                // 手风琴：关闭同级其他文件夹，并递归清除其子状态
                 if (nowOpen) {
                     const parent = wrapper.parentElement;
                     if (parent) {
                         parent.childNodes.forEach(sibling => {
                             if (sibling !== wrapper && sibling._folderNode) {
                                 this._openState.set(sibling._folderNode, false);
-                                this._clearOpenStateDeep(sibling._folderNode); // 递归清除子层级
+                                this._clearOpenStateDeep(sibling._folderNode);
                                 sibling._childrenEl.style.display = "none";
-                                sibling._childrenEl.innerHTML = "";            // 清空 DOM，下次展开重新渲染
+                                sibling._childrenEl.innerHTML = "";
                                 sibling._toggleEl.className = "ltl-folder-toggle";
                             }
                         });
@@ -407,7 +799,6 @@ class CascadeMenu {
                     if (children.childElementCount === 0) {
                         this._renderTree(children, folder.node, depth + 1);
                     }
-                    // 展开后自动滚动：把文件夹行贴近列表顶部
                     requestAnimationFrame(() => {
                         const scroller = row.closest(".ltl-panel-list");
                         if (scroller) {
@@ -441,7 +832,6 @@ class CascadeMenu {
                 span.title = file.rel;
 
                 item.setAttribute("data-rel", file.rel);
-                // 当前选中项高亮
                 if (this._currentRel && file.rel === this._currentRel) {
                     item.style.background = "#45475a";
                 }
@@ -482,7 +872,6 @@ class CascadeMenu {
     }
 
     _runSearch(rawQuery, list) {
-        // 清除旧的懒加载 scroll 监听，防止累积
         this._clearScrollListeners(list.closest(".ltl-panel-list") || list);
         list.innerHTML = "";
         const q = rawQuery.trim().toLowerCase();
@@ -543,9 +932,6 @@ class CascadeMenu {
     }
 }
 
-// ════════════════════════════════════════════════════════
-//  节点 1：LoRA Txt Loader（级联菜单）
-// ════════════════════════════════════════════════════════
 app.registerExtension({
     name: "LoRATxtLoader.AutoFill",
 
@@ -575,20 +961,32 @@ app.registerExtension({
                     const data = await res.json();
                     return data.txt ?? "";
                 } catch (e) {
-                    console.warn("[LoRATxtLoader] 获取 txt 失败", e);
+                    console.warn("[LoRATxtLoader] Failed to get txt file.", e);
                     return "";
                 }
             };
 
-            // ---- 隐藏原始下拉 combo ----
+            const checkVersionStatus = async (loraName, currentContent) => {
+                try {
+                    const statusRes = await fetch(`/lora_txt_loader/version_status?lora_name=${encodeURIComponent(loraName)}`);
+                    const statusData = await statusRes.json();
+                    const originalContent = statusData.current_txt_content;
+
+                    if (currentContent.trim() === originalContent.trim()) {
+                        showToast("Using default version", "info");
+                    }
+                } catch (e) {
+                    console.error("[LoRATxtLoader] Failed to check version status", e);
+                }
+            };
+
             loraWidget.computeSize = () => [0, -4];
             loraWidget.draw = () => {};
             loraWidget.mouse = () => {};
 
-            // ---- 选中 LoRA 的显示按钮 ----
             const initName = loraWidget.value
                 ? loraWidget.value.split(/[\/\\]/).pop()
-                : "( 点击选择 LoRA )";
+                : "( Click to select LoRA. )";
             const displayWidget = this.addWidget("button", initName, null, () => openMenu());
             displayWidget.serialize = false;
             displayWidget.computeSize = function(width) { return [width, LiteGraph.NODE_WIDGET_HEIGHT ?? 20]; };
@@ -613,7 +1011,6 @@ app.registerExtension({
                 ctx.restore();
             };
 
-            // ---- 树形面板菜单 ----
             const menu = new CascadeMenu(
                 async (loraRel, filename) => {
                     loraWidget.value   = loraRel;
@@ -622,6 +1019,9 @@ app.registerExtension({
                     promptWidget.value = await fetchTxt(loraRel);
                     fitSize();
                     app.graph.setDirtyCanvas(true);
+
+                    // 检查版本状态
+                    await checkVersionStatus(loraRel, promptWidget.value);
                 },
                 () => {}
             );
@@ -639,37 +1039,176 @@ app.registerExtension({
                 const mp     = app.canvas.graph_mouse;
                 const scale  = app.canvas.ds?.scale  ?? 1;
                 const offset = app.canvas.ds?.offset ?? [0, 0];
-                // 修复：正确的坐标公式 screen = canvas_pos * scale + offset
                 anchor.style.left = mp[0] * scale + offset[0] + canvasRect.left + "px";
                 anchor.style.top  = mp[1] * scale + offset[1] + canvasRect.top  + "px";
                 menu.open(anchor, loraWidget.value || null);
             };
 
-            // ---- Reset 按钮 ----
             const resetBtn = this.addWidget("button", "↺ Reset from .txt", null, async () => {
                 promptWidget.value = await fetchTxt(loraWidget.value);
             });
             resetBtn.serialize = false;
             applyLabelButtonDraw(resetBtn, "center");
 
-            // ---- 刷新列表按钮（同时清后端缓存 + 前端 LoraStore）----
-            const refreshBtn = this.addWidget("button", "⟳ 刷新 LoRA 列表", null, async () => {
-                refreshBtn.name = "⟳ 刷新中...";
+            const refreshBtn = this.addWidget("button", "⟳ Refresh LoRA list", null, async () => {
+                refreshBtn.name = "⟳ Refreshing...";
                 app.graph.setDirtyCanvas(true);
                 await refreshLoraStore();
-                refreshBtn.name = "⟳ 刷新 LoRA 列表";
+                refreshBtn.name = "⟳ Refresh LoRA list";
                 app.graph.setDirtyCanvas(true);
             });
             refreshBtn.serialize = false;
             applyLabelButtonDraw(refreshBtn, "center");
 
-            // ---- 首次加载 ----
+            // ---- 右键菜单（版本管理）----
+            const origGetExtraMenuOptions = this.getExtraMenuOptions;
+            this.getExtraMenuOptions = function(canvas, options) {
+                origGetExtraMenuOptions?.apply(this, arguments);
+
+                options.push(null);
+                options.push({
+                    content: "💾 Save LoRA Tags Version",
+                    callback: () => {
+                        if (!loraWidget.value) {
+                            showToast("Please select a LoRA first", "error");
+                            return;
+                        }
+
+                        const content = promptWidget.value.trim();
+                        if (!content) {
+                            showToast("Prompt content cannot be empty", "error");
+                            return;
+                        }
+
+                        // 获取版本信息，判断是否是首次保存
+                        (async () => {
+                            try {
+                                const statusRes = await fetch(`/lora_txt_loader/version_status?lora_name=${encodeURIComponent(loraWidget.value)}`);
+                                const statusData = await statusRes.json();
+                                const originalContent = statusData.original_content || statusData.current_txt_content;
+                                const isFirstSave = !statusData.has_versions;
+
+                                if (content === originalContent) {
+                                    showToast("Content is same as default version, no need to save", "info");
+                                    return;
+                                }
+
+                                showSaveVersionDialog(loraWidget.value, content, isFirstSave, originalContent, async (customName, remark) => {
+                                    try {
+                                        const res = await fetch("/lora_txt_loader/save_version", {
+                                            method: "POST",
+                                            headers: { "Content-Type": "application/json" },
+                                            body: JSON.stringify({
+                                                lora_name: loraWidget.value,
+                                                content: content,
+                                                custom_name: customName,
+                                                remark: remark,
+                                            }),
+                                        });
+                                        const data = await res.json();
+                                        if (data.success) {
+                                            if (data.is_default) {
+                                                showToast(data.message, "success");
+                                            } else {
+                                                showToast(`Version "${customName}" saved successfully!`, "success");
+                                            }
+                                        } else {
+                                            showToast(`Error: ${data.error}`, "error");
+                                        }
+                                    } catch (e) {
+                                        console.error("[LoRATxtLoader] Failed to save version", e);
+                                        showToast("Failed to save version", "error");
+                                    }
+                                });
+                            } catch (e) {
+                                console.error("[LoRATxtLoader] Failed to get version status", e);
+                                showToast("Failed to check version status", "error");
+                            }
+                        })();
+                    },
+                });
+
+                options.push({
+                    content: "📚 LoRA Tags Version Manager",
+                    callback: () => {
+                        if (!loraWidget.value) {
+                            showToast("Please select a LoRA first", "error");
+                            return;
+                        }
+
+                        (async () => {
+                            try {
+                                const res = await fetch(`/lora_txt_loader/version_status?lora_name=${encodeURIComponent(loraWidget.value)}`);
+                                const data = await res.json();
+
+                                showVersionManagerDialog(loraWidget.value, data.versions_list || [], data.current_version, data.has_original, async (action, filename) => {
+                                    if (action === "load") {
+                                        try {
+                                            const loadRes = await fetch("/lora_txt_loader/load_version", {
+                                                method: "POST",
+                                                headers: { "Content-Type": "application/json" },
+                                                body: JSON.stringify({
+                                                    lora_name: loraWidget.value,
+                                                    version_filename: filename,
+                                                }),
+                                            });
+                                            const loadData = await loadRes.json();
+                                            if (loadData.success) {
+                                                promptWidget.value = loadData.content;
+                                                fitSize();
+                                                app.graph.setDirtyCanvas(true);
+                                                showToast(`Version loaded: ${filename}`, "success");
+                                            } else {
+                                                showToast(`Error: ${loadData.error}`, "error");
+                                            }
+                                        } catch (e) {
+                                            console.error("[LoRATxtLoader] Failed to load version", e);
+                                            showToast("Failed to load version", "error");
+                                        }
+                                    } else if (action === "delete") {
+                                        try {
+                                            const delRes = await fetch("/lora_txt_loader/delete_version", {
+                                                method: "POST",
+                                                headers: { "Content-Type": "application/json" },
+                                                body: JSON.stringify({
+                                                    lora_name: loraWidget.value,
+                                                    version_filename: filename,
+                                                }),
+                                            });
+                                            const delData = await delRes.json();
+                                            if (delData.success) {
+                                                showToast(`Version deleted: ${filename}`, "success");
+                                                // 重新加载版本管理器
+                                                const reloadRes = await fetch(`/lora_txt_loader/version_status?lora_name=${encodeURIComponent(loraWidget.value)}`);
+                                                const reloadData = await reloadRes.json();
+                                                showVersionManagerDialog(loraWidget.value, reloadData.versions_list || [], reloadData.current_version, reloadData.has_original, arguments.callee);
+                                            } else {
+                                                showToast(`Error: ${delData.error}`, "error");
+                                            }
+                                        } catch (e) {
+                                            console.error("[LoRATxtLoader] Failed to delete version", e);
+                                            showToast("Failed to delete version", "error");
+                                        }
+                                    }
+                                });
+                            } catch (e) {
+                                console.error("[LoRATxtLoader] Failed to load version status", e);
+                                showToast("Failed to load version manager", "error");
+                            }
+                        })();
+                    },
+                });
+            };
+
             setTimeout(async () => {
                 if (loraWidget.value) {
                     displayWidget.name = loraWidget.value.split(/[\/\\]/).pop();
                     if (promptWidget.value === "") {
                         promptWidget.value = await fetchTxt(loraWidget.value);
                         fitSize();
+
+                        // 检查版本状态
+                        await checkVersionStatus(loraWidget.value, promptWidget.value);
                     }
                 }
             }, 100);
@@ -677,9 +1216,6 @@ app.registerExtension({
     },
 });
 
-// ════════════════════════════════════════════════════════
-//  节点 4：LoRA Txt Loader (Dropdown)
-// ════════════════════════════════════════════════════════
 app.registerExtension({
     name: "LoRATxtLoaderDropdown.AutoFill",
 
@@ -709,7 +1245,7 @@ app.registerExtension({
                     const data = await res.json();
                     return data.txt ?? "";
                 } catch (e) {
-                    console.warn("[LoRATxtLoaderDropdown] 获取 txt 失败", e);
+                    console.warn("[LoRATxtLoaderDropdown] Failed to get txt file", e);
                     return "";
                 }
             };
@@ -741,10 +1277,6 @@ app.registerExtension({
     },
 });
 
-// ════════════════════════════════════════════════════════
-//  节点 3：Txt File Loader
-//  修复：defineProperty 不再放在 setTimeout 里，消除竞态
-// ════════════════════════════════════════════════════════
 app.registerExtension({
     name: "TxtFileLoader.AutoFill",
 
@@ -770,23 +1302,46 @@ app.registerExtension({
 
             const fetchTxtFile = async (txtName) => {
                 try {
-                    const res  = await fetch(`/lora_txt_loader/get_txt_file?txt_name=${encodeURIComponent(txtName)}`);
+                    const res = await fetch(`/lora_txt_loader/get_txt_file?txt_name=${encodeURIComponent(txtName)}`);
+                    if (!res.ok) {
+                        console.warn(`[TxtFileLoader] HTTP error: ${res.status}`);
+                        return "";
+                    }
                     const data = await res.json();
                     return data.txt ?? "";
                 } catch (e) {
-                    console.warn("[TxtFileLoader] 获取 txt 失败", e);
+                    console.warn("[TxtFileLoader] Failed to fetch txt file", e);
                     return "";
                 }
             };
 
-            const resetBtn = this.addWidget("button", "↺ Reset from file", null, async () => {
-                textWidget.value = await fetchTxtFile(nameWidget.value);
-                fitSize();
+            // 刷新文件列表
+            const refreshFileList = async () => {
+                try {
+                    const res = await fetch("/lora_txt_loader/get_txt_list");
+                    if (!res.ok) return;
+                    const data = await res.json();
+                    const files = data.files || [];
+
+                    if (files.length > 0) {
+                        nameWidget.options.values = files;
+                    }
+                } catch (e) {
+                    console.warn("[TxtFileLoader] Failed to refresh file list", e);
+                }
+            };
+
+            // 添加"刷新文件列表"按钮
+            const resetBtn = this.addWidget("button", "↺ Refresh Files", null, async () => {
+                await refreshFileList();
+                if (nameWidget.value && !nameWidget.value.includes("(No txt files found)")) {
+                    textWidget.value = await fetchTxtFile(nameWidget.value);
+                    fitSize();
+                }
             });
             resetBtn.serialize = false;
-            applyLabelButtonDraw(resetBtn, "center");
 
-            // 修复竞态：立刻劫持 setter，不等 setTimeout
+            // 监听 txt_name 的变化，自动加载文件内容
             let _val = nameWidget.value;
             Object.defineProperty(nameWidget, "value", {
                 configurable: true,
@@ -794,7 +1349,7 @@ app.registerExtension({
                 set(v) {
                     const prev = _val;
                     _val = v;
-                    if (v !== prev) {
+                    if (v !== prev && v && !v.includes("(No txt files found)")) {
                         fetchTxtFile(v).then(txt => {
                             textWidget.value = txt;
                             fitSize();
@@ -803,13 +1358,18 @@ app.registerExtension({
                 }
             });
 
-            // 首次加载
-            if (textWidget.value === "" && nameWidget.value) {
+            // 初始化时加载文件内容
+            if (textWidget.value === "" && nameWidget.value && !nameWidget.value.includes("(No txt files found)")) {
                 fetchTxtFile(nameWidget.value).then(txt => {
                     textWidget.value = txt;
                     fitSize();
                 });
             }
+
+            // 定期刷新文件列表（每5秒检查一次是否有新文件）
+            setInterval(() => {
+                refreshFileList();
+            }, 5000);
         };
     },
 });
